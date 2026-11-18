@@ -70,9 +70,33 @@ class SchemaRegistryService:
         schemas = self.get_schema_for_table(table_name)
         if not schemas:
             return None
-        # 找版本号最大的
-        latest = max(schemas, key=lambda s: s.get("定义版本", "v0"))
-        return latest
+        # 版本号按数值比较，避免 v9/v10 这类两位数版本被字典序排错。
+        return max(schemas, key=lambda s: self._version_number(s.get("定义版本")))
+
+    def _version_number(self, version: Any) -> int:
+        try:
+            return int(str(version or "v0").lstrip("v"))
+        except ValueError:
+            return 0
+
+    def register_structure(self, values: dict[str, Any]) -> dict[str, Any]:
+        """登记或就地推进一张表的结构版本，供维度最新版表等下游联动调用。
+
+        同一张表已经有相同字段签名时直接返回现有定义，不重复建版本；字段结构
+        变化才生成新版本，注册版本只增不减。
+        """
+        table_name = str(values.get("表名称") or "").strip()
+        signature = str(values.get("字段名称") or "").strip()
+        latest = self.get_latest_schema(table_name) if table_name else None
+        if latest and latest.get("字段名称") == signature:
+            return latest
+        entry, missing = self.create_entry(values)
+        if entry is None:
+            raise ValueError(f"结构注册失败：缺少必填字段 {'、'.join(missing)}")
+        entry["status"] = "已生效"
+        entry["pending"] = False
+        store.save_version(MODULE, int(entry["id"]), entry)
+        return entry
 
     def derive_schema_from_lineage(self, table_name: str) -> dict[str, Any] | None:
         """从血缘关系推导字段变更：找上游表最新schema并合并。"""
@@ -92,11 +116,7 @@ class SchemaRegistryService:
         latest = self.get_latest_schema(table_name)
         new_version = "v2"
         if latest:
-            try:
-                vnum = int(latest.get("定义版本", "v1").replace("v", ""))
-                new_version = f"v{vnum + 1}"
-            except Exception:
-                new_version = "v2"
+            new_version = f"v{self._version_number(latest.get('定义版本')) + 1}"
         # 生成新schema定义
         new_entry = {
             "定义编号": f"SCH-DERIVED-{table_name}",

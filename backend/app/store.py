@@ -4,10 +4,11 @@
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
-from app.seed import SEED_ROWS
+from app.seed import SEED_ROWS, SEED_TABLE_DATA, SEED_TABLE_META
 
 
 class Store:
@@ -16,7 +17,13 @@ class Store:
             name: [dict(row) for row in rows] for name, rows in SEED_ROWS.items()
         }
         # 模拟真实表数据（分层存储的实际行数据）
-        self._table_data: dict[str, list[dict[str, Any]]] = {}
+        self._table_data: dict[str, list[dict[str, Any]]] = {
+            name: [dict(row) for row in rows] for name, rows in SEED_TABLE_DATA.items()
+        }
+        # 表级元数据（刷新水位、来源批次、结构版本、提交记录等）
+        self._table_meta: dict[str, dict[str, Any]] = {
+            name: deepcopy(meta) for name, meta in SEED_TABLE_META.items()
+        }
         # 版本历史: "module:id" -> [{version, timestamp, data}, ...]
         self._versions: dict[str, list[dict[str, Any]]] = {}
         # 血缘边记录
@@ -29,6 +36,8 @@ class Store:
         self._archive_records: list[dict[str, Any]] = []
         # 补数区间记录
         self._backfill_partitions: dict[str, list[dict[str, Any]]] = {}
+        # 故障注入点（测试用）：stage -> 抛出异常，模拟事务中途失败
+        self.failpoint: Callable[[str], None] | None = None
 
     def module_names(self) -> list[str]:
         return sorted(self._tables)
@@ -79,6 +88,58 @@ class Store:
 
     def append_table_rows(self, table_name: str, rows: list[dict[str, Any]]) -> None:
         self._table_data.setdefault(table_name, []).extend(rows)
+
+    # ---- 表级元数据（刷新水位 / 来源批次 / 结构版本） ----
+
+    def table_meta(self, table_name: str) -> dict[str, Any]:
+        return self._table_meta.setdefault(table_name, {})
+
+    def set_table_meta(self, table_name: str, values: dict[str, Any]) -> None:
+        meta = self.table_meta(table_name)
+        meta.update(deepcopy(values))
+
+    # ---- 事务：整批提交，失败回滚到提交前的恢复点 ----
+
+    def commit_transaction(self, mutate: Callable[[], Any]) -> Any:
+        """在恢复点副本上执行 mutate，全部成功才落到正式仓库。
+
+        合并结果、刷新水位和结构版本必须同时可见：任何一步抛异常（包括注入的
+        幂等写入失败）都会丢弃副本，仓库保持提交前的状态，方便下一次任务
+        从同一个恢复点重试。
+        """
+        recovery_point = self._snapshot_state()
+        try:
+            result = mutate()
+            if self.failpoint is not None:
+                self.failpoint("commit")
+        except Exception:
+            self._restore_state(recovery_point)
+            raise
+        return result
+
+    def _snapshot_state(self) -> dict[str, Any]:
+        return {
+            "tables": deepcopy(self._tables),
+            "table_data": deepcopy(self._table_data),
+            "table_meta": deepcopy(self._table_meta),
+            "versions": deepcopy(self._versions),
+            "lineage_edges": deepcopy(self._lineage_edges),
+            "quality_results": deepcopy(self._quality_results),
+            "snapshot_data": deepcopy(self._snapshot_data),
+            "archive_records": deepcopy(self._archive_records),
+            "backfill_partitions": deepcopy(self._backfill_partitions),
+        }
+
+    def _restore_state(self, state: dict[str, Any]) -> None:
+        self._tables = state["tables"]
+        self._table_data = state["table_data"]
+        self._table_meta = state["table_meta"]
+        self._versions = state["versions"]
+        self._lineage_edges = state["lineage_edges"]
+        self._quality_results = state["quality_results"]
+        self._snapshot_data = state["snapshot_data"]
+        self._archive_records = state["archive_records"]
+        self._backfill_partitions = state["backfill_partitions"]
 
     # ---- 版本管理 ----
 

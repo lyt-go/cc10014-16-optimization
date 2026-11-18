@@ -76,6 +76,43 @@
       <span>共 {{ total }} 条结构注册记录</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
+
+    <section class="detail-panel" data-testid="product-dim-schema">
+      <header class="detail-head">
+        <div>
+          <h3>商品维度最新版表 · 结构版本</h3>
+          <p class="page-desc">结构注册记录与最新版表的刷新水位、来源批次互相定位。</p>
+        </div>
+        <button class="btn" data-testid="reload-product-schema" type="button" @click="loadProductSchema()">回查结构版本</button>
+      </header>
+      <div class="detail-grid">
+        <div class="detail-section">
+          <h4>表级定位</h4>
+          <dl><dt>表名称</dt><dd data-testid="schema-table">{{ productSchema.table ?? '—' }}</dd></dl>
+          <dl><dt>结构版本</dt><dd data-testid="schema-version">{{ productSchema.schema?.['定义版本'] ?? '—' }}</dd></dl>
+          <dl><dt>刷新水位</dt><dd>{{ productSchema.meta?.['刷新水位'] || '—' }}</dd></dl>
+          <dl><dt>来源批次</dt><dd>{{ productSchema.meta?.['来源批次'] || '—' }}</dd></dl>
+          <dl><dt>字段名称</dt><dd>{{ productSchema.schema?.['字段名称'] ?? '—' }}</dd></dl>
+        </div>
+        <div class="detail-section">
+          <h4>结构版本历史</h4>
+          <table class="data-table small">
+            <thead><tr><th>定义编号</th><th>定义版本</th><th>生效批次</th><th>状态</th></tr></thead>
+            <tbody>
+              <tr v-for="item in productSchema.schemas ?? []" :key="String(item.id)">
+                <td>{{ item['定义编号'] }}</td>
+                <td>{{ item['定义版本'] }}</td>
+                <td>{{ item['生效批次'] || '—' }}</td>
+                <td>{{ item.status }}</td>
+              </tr>
+              <tr v-if="!(productSchema.schemas ?? []).length">
+                <td colspan="4" class="empty-state">暂无结构定义</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
   </section>
 </template>
 
@@ -85,6 +122,7 @@ import { computed, onMounted, ref } from 'vue'
 import { request } from '@/api/client'
 
 type Row = Record<string, string | number | null>
+type JsonRow = Record<string, any>
 
 const ENDPOINT = '/api/schema_registry'
 const columns = ["定义编号", "表名称", "字段名称", "字段类型", "可空标识", "默认值", "定义版本", "生效批次"]
@@ -100,6 +138,7 @@ const filterFields = columns.slice(0, 3)
 const showCreate = ref(false)
 const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
+const productSchema = ref<JsonRow>({})
 const stats = computed(() => [
   { label: metricNames[0], value: total.value },
   { label: metricNames[1], value: rows.value.filter((row) => row.status === statuses[1]).length },
@@ -168,6 +207,17 @@ async function runAction(action: string, row: Row) {
   }
 }
 
+async function loadProductSchema() {
+  errorMessage.value = ''
+  try {
+    const response = await request(`${ENDPOINT}/product-dim/latest`)
+    if (!response.ok) throw new Error('商品维度最新版表结构读取失败')
+    productSchema.value = await response.json()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '商品维度最新版表结构读取失败'
+  }
+}
+
 async function reload() {
   errorMessage.value = ''
   const query = new URLSearchParams(filters.value as Record<string, string>).toString()
@@ -184,5 +234,8 @@ async function reload() {
   }
 }
 
-onMounted(reload)
+onMounted(() => {
+  void reload()
+  void loadProductSchema()
+})
 </script>

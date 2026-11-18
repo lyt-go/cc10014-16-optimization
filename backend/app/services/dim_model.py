@@ -8,9 +8,9 @@ from app.store import store
 MODULE = "dim_model"
 LIST_FIELDS = ["模型编号", "维度名称", "自然键列", "代理键列", "缓慢变化策略", "生效日期", "失效日期", "刷新周期"]
 REQUIRED_FIELDS = ["模型编号", "维度名称"]
-STATUS_ORDER = ["草稿", "待校验", "已生效", "已废弃"]
-ACTION_RULES = {"提交校验": "待校验", "标记生效": "已生效", "标记废弃": "已废弃"}
-NEGATIVE_ACTIONS = []
+STATUS_ORDER = ["草稿", "待校验", "已生效", "已停用"]
+ACTION_RULES = {"提交校验": "待校验", "标记生效": "已生效", "停用模型": "已停用"}
+NEGATIVE_ACTIONS = ["停用模型"]
 
 
 class DimModelService:
@@ -63,19 +63,31 @@ class DimModelService:
         store.save_version(MODULE, entry_id, entry)
         return entry, f"维度模型已{action}"
 
-    def build_dim_from_dwd(self, entry_id: int) -> dict[str, Any]:
-        """从关联DWD表数据生成维度表数据（模拟）。"""
+    def build_dim_from_dwd(self, entry_id: int, conflict_policy: str = "") -> dict[str, Any]:
+        """从关联DWD表数据生成维度表数据。
+
+        商品维度不再「只保留首次出现行」，而是按业务键增量合并到最新版表：
+        迟到更正只要业务时间更新就会刷新当前值，已提交记录不会重复扫描。
+        """
         entry = self.get_entry(entry_id)
         if not entry:
             return {"ok": False, "message": "维度模型不存在"}
         dim_name = entry.get("维度名称", "")
         key_col = entry.get("自然键列", "")
+        if "商品" in dim_name:
+            from app.services.product_dim_latest import ProductDimLatestService
+            result = ProductDimLatestService().merge_from_dwd(
+                conflict_policy=conflict_policy or "保留原值",
+                entry_id=entry_id,
+            )
+            if result.get("ok"):
+                dimension_result = result.get("dimension_result") or {}
+                result.setdefault("rows", dimension_result.get("当前值", []))
+            return result
         # 根据维度名称找对应的DWD表
         dwd_table = ""
         if "用户" in dim_name:
             dwd_table = "dwd_user_detail"
-        elif "商品" in dim_name:
-            dwd_table = "dwd_product_detail"
         elif "日期" in dim_name:
             dwd_table = "dwd_date_detail"
         dwd_data = store.table_rows(dwd_table)

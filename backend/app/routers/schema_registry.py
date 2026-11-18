@@ -65,6 +65,20 @@ def export_entries(
         headers={"Content-Disposition": 'attachment; filename="schema_registry.csv"'})
 
 
+@router.get("/product-dim/latest", response_model=dict)
+def get_product_dim_schema() -> dict:
+    """商品维度最新版表的结构版本回查：结构定义与表级水位、来源批次互相定位。"""
+    from app.services.product_dim_latest import DIM_TABLE, ProductDimLatestService
+
+    product_dim = ProductDimLatestService()
+    return {
+        "table": DIM_TABLE,
+        "schema": service.get_latest_schema(DIM_TABLE),
+        "schemas": service.get_schema_for_table(DIM_TABLE),
+        "meta": product_dim.get_meta(),
+    }
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
     """读取单条结构定义明细；不存在时给出可读的错误说明。"""
